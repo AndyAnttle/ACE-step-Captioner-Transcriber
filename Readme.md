@@ -27,7 +27,7 @@ A powerful application for music captioning and song transcription using state-o
 
 1. Clone the repository:
 ```
-   git clone https://github.com/your-username/repo-name.git
+   git clone https://github.com/AndyAnttle/ACE-step-Captioner-Transcriber.git
    cd repo-name
 ```
 
@@ -72,5 +72,6 @@ The browser will open automatically with the interface.
 Qwen Omni requires a specific transformers branch; it is specified in requirements.txt.
 
 Demucs will download its weights (~1 GB) on first use.
+
 
 Whisper large-v3 will be downloaded on first use (~3 GB).
