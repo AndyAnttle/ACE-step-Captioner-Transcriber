@@ -31,8 +31,8 @@ A powerful application for music captioning and song transcription using state-o
 
 1. Clone the repository:
 ```
-   git clone https://github.com/your-username/repo-name.git
-   cd repo-name
+   git clone https://github.com/AndyAnttle/ACE-step-Captioner-Transcriber.git
+   cd ACE-step-Captioner-Transcriber
 ```
 
 2. Create a virtual environment (recommended):
@@ -79,6 +79,7 @@ Demucs will download its weights (~1 GB) on first use.
 
 
 Whisper large-v3 will be downloaded on first use (~3 GB).
+
 
 
 
