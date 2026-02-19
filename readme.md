@@ -1,3 +1,5 @@
+[Read this in English](https://github.com/AndyAnttle/ACE-step-Captioner-Transcriber/tree/main)
+
 # 🎵 ACE-step: Captioner & Transcriber
 
 ![Интерфейс программы](screenshot.JPG)
@@ -79,3 +81,4 @@ python app.py
 
 
 Whisper large-v3 загружается при первом использовании (около 3 ГБ).
+
