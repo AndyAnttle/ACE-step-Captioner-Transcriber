@@ -751,7 +751,7 @@ with gr.Blocks(title="🎵 ACE-step: Captioner & Transcriber") as demo:
     # Toggle UI based on selected model
     def toggle_ui(choice):
         show_qwen = choice == "Qwen Omni"
-        show_whisper = choice == "Whisper Large v3"
+        show_whisper = choice == "Whisper Large"
         return (
             gr.update(visible=show_whisper),        # whisper_col
             gr.update(visible=show_qwen),            # qwen_col
