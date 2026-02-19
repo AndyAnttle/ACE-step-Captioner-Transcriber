@@ -1,3 +1,5 @@
+*[Read this in Russian (Русский)](https://github.com/AndyAnttle/ACE-step-Captioner-Transcriber/tree/russian-version)*
+
 # 🎵 ACE-step: Captioner & Transcriber
 
 ![Image](screenshot.JPG)
@@ -77,3 +79,4 @@ Demucs will download its weights (~1 GB) on first use.
 
 
 Whisper large-v3 will be downloaded on first use (~3 GB).
+
