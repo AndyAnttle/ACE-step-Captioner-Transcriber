@@ -1,6 +1,6 @@
 # 🎵 ACE-step: Captioner & Transcriber
 
-![Image](screenshot.png)
+![Image](screenshot.JPG)
 
 A powerful application for music captioning and song transcription using state-of-the-art models: **Qwen2.5-Omni** and **Whisper** (large-v3 / large-v2). It offers flexible preprocessing (noise reduction, stem separation, segmentation) and batch processing.
 
@@ -74,5 +74,6 @@ The browser will open automatically with the interface.
 Qwen Omni requires a specific transformers branch; it is specified in requirements.txt.
 
 Demucs will download its weights (~1 GB) on first use.
+
 
 Whisper large-v3 will be downloaded on first use (~3 GB).
