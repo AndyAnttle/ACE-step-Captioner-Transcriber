@@ -4,7 +4,7 @@
 
 ![Image](screenshot.JPG)
 
-A powerful application for music captioning and song transcription using state-of-the-art models: **Qwen2.5-Omni** and **Whisper** (large-v3 / large-v2). It offers flexible preprocessing (noise reduction, stem separation, segmentation) and batch processing.
+A powerful application for music captioning and song transcription using state-of-the-art models: **Qwen2.5-Omni ([Ace-Step](https://huggingface.co/ACE-Step))** and **Whisper** (large-v3 / large-v2). It offers flexible preprocessing (noise reduction, stem separation, segmentation) and batch processing.
 
 ## Features
 
@@ -79,4 +79,5 @@ Demucs will download its weights (~1 GB) on first use.
 
 
 Whisper large-v3 will be downloaded on first use (~3 GB).
+
 
