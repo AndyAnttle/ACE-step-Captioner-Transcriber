@@ -1,80 +1,78 @@
 # 🎵 ACE-step: Captioner & Transcriber
-![Screenshot](screenshot.JPG)
 
-A powerful application for music captioning and song transcription using state-of-the-art models: **Qwen2.5-Omni** and **Whisper** (large-v3 / large-v2). It offers flexible preprocessing (noise reduction, stem separation, segmentation) and batch processing.
+Приложение для описания музыки (captioning) и транскрибации песен (transcription) с использованием моделей Qwen2.5-Omni и Whisper. Позволяет обрабатывать одиночные файлы, папки с аудио, применять шумоподавление, разделение на стемы (Demucs) и фрагментированную обработку.
 
-## Features
+## Возможности
 
-- **Two recognition models**: Qwen Omni (for music description / transcription) and Whisper (pure transcription).
-- **Flexible model loading**: quantization (4/8-bit), Flash Attention, CPU offload.
-- **Batch processing**: process multiple files or an entire folder.
-- **Audio preprocessing**:
-  - Noise reduction (noisereduce)
-  - Stem separation (Demucs) – extract vocals, instrumental, etc.
-  - Trim by duration
-  - Segmented processing for long audio
-- **Auto-save and manual save** results (next to the audio or in a specified folder).
-- **User-friendly Gradio interface** with native folder selection dialogs.
-- **GPU acceleration** for Demucs and models.
+- **Две модели распознавания**: Qwen Omni (для описания/транскрибации) и Whisper Large v3/v2 (только транскрибация)
+- **Гибкая загрузка моделей**: поддержка квантизации (4/8 бит), Flash Attention, offload на CPU
+- **Пакетная обработка**: несколько файлов или целая папка
+- **Предобработка аудио**:
+  - Шумоподавление (noisereduce)
+  - Разделение на стемы (Demucs) – извлечение вокала, инструментала и т.д.
+  - Обрезка по длительности
+  - Фрагментированная обработка длинных аудио
+- **Автоматическое и ручное сохранение** результатов (рядом с аудио или в выбранную папку)
+- **Удобный интерфейс** на Gradio с кнопками выбора папок через проводник
+- **Поддержка GPU** для ускорения (Demucs, модели)
 
-## Installation
+## Установка
 
-### Requirements
-- Python 3.12 (recommended) or 3.10–3.12
-	Tested on Python 3.12.9
-- CUDA (optional, for GPU)
+### Требования
+- Python 3.12 (рекомендуется) или 3.10–3.12. Протестировано на Python 3.12.9
+- CUDA (опционально, для GPU)
 
-### Steps
+### Шаги
 
-1. Clone the repository:
+1. Клонируйте репозиторий:
 ```
    git clone https://github.com/AndyAnttle/ACE-step-Captioner-Transcriber.git
    cd ACE-step-Captioner-Transcriber
 ```
 
-2. Create a virtual environment (recommended):
+2. Создайте виртуальное окружение (рекомендуется):
+
 ```
 python -m venv venv
-source venv/bin/activate   # Linux/Mac
-venv\Scripts\activate       # Windows
+source venv/bin/activate  # Linux/Mac
+venv\Scripts\activate      # Windows
 ```
 
-3. Install dependencies:
-Torch and requirements for Python 3.12.9
+3. Установите зависимости:
+Torch и требования к Python 3.12.9
 ```
 pip install torch==2.7.0+cu126 torchvision==0.22.0+cu126 torchaudio==2.7.0+cu126 --index-url https://download.pytorch.org/whl/cu126
 pip install -r requirements.txt
 pip install flash-attn==2.7.4.post1 --no-build-isolation
 ```
 
-4. Run the application:
+4. Запустите приложение:
+
 ```
 python app.py
 ```
-The browser will open automatically with the interface.
 
-### Usage
-1. Select the recognition model (Qwen Omni or Whisper).
+После запуска откроется браузер с интерфейсом.
 
-2. If Qwen is chosen, specify the path to your Qwen models; (you can change it in the code MODELS_ROOT = r"your\path\folder") and load the model.
+### Использование
+Выберите модель распознавания (Qwen Omni или Whisper).
 
-3. For Whisper, choose the version and language, then load the model.
+Если выбрана Qwen, укажите путь к папке с моделями (вы можете изменить его в коде MODELS_ROOT = r'ваш\\путь\\папка') и загрузите модель.
 
-4. Adjust preprocessing settings (noise reduction, stems, segmentation, etc.).
+1. Для Whisper выберите версию и язык, затем загрузите модель.
 
-5. Choose input mode: single file, multiple files, or a folder.
+2. Настройте параметры предобработки (шумоподавление, стемы, фрагментация и т.д.).
 
-6. Click the run button (its label depends on the selected model).
+3. Выберите режим ввода: одиночный файл, несколько файлов или папку.
 
-7. The result will appear in the text box. You can save it manually or enable auto-save.
+4. Нажмите кнопку запуска (название зависит от выбранной модели).
 
+5. Результат появится в текстовом поле. Можно сохранить вручную или включить автосохранение.
 
-### Notes
-Qwen Omni requires a specific transformers branch; it is specified in requirements.txt.
+### Примечания
 
-Demucs will download its weights (~1 GB) on first use.
+Для работы Qwen Omni необходима особая версия transformers из ветки, она указана в requirements.txt.
 
+При первом запуске Demucs загрузит веса модели (около 1 ГБ) в кэш.
 
-Whisper large-v3 will be downloaded on first use (~3 GB).
-
-
+Whisper large-v3 загружается при первом использовании (около 3 ГБ).
