@@ -23,7 +23,7 @@ A powerful application for music captioning and song transcription using state-o
 ## Installation
 
 ### Requirements
-- Python 3.12 (recommended) or 3.10–3.12. Tested on Python 3.12.9
+- Python 3.12 (recommended) or 3.10–3.12.
 	Tested on Python 3.12.9
 - CUDA (optional, for GPU)
 
@@ -79,6 +79,7 @@ Demucs will download its weights (~1 GB) on first use.
 
 
 Whisper large-v3 will be downloaded on first use (~3 GB).
+
 
 
 
