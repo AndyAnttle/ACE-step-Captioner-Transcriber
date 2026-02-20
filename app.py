@@ -286,6 +286,12 @@ def ensure_output_dir(output_dir):
     if output_dir:
         Path(output_dir).mkdir(parents=True, exist_ok=True)
 
+def is_temp_path(path):
+    """Проверяет, находится ли файл во временной папке системы."""
+    temp_dirs = [tempfile.gettempdir(), '/tmp', '/var/tmp']
+    norm_path = os.path.normpath(path)
+    return any(norm_path.startswith(os.path.normpath(temp_dir)) for temp_dir in temp_dirs)
+
 def save_result(text, audio_path, output_dir, model_type):
     if not text or text.startswith("⚠") or text.startswith("Ошибка") or text.startswith("⏹️"):
         return None, "Результат не сохранён (пустой или ошибочный)"
@@ -293,8 +299,16 @@ def save_result(text, audio_path, output_dir, model_type):
         base = os.path.splitext(os.path.basename(audio_path))[0]
     else:
         base = "result"
-    suffix = "caption" if model_type == "captioner" else "transcript"
-    filename = f"{base}_{suffix}.txt"
+
+    # Определяем суффикс в зависимости от типа модели
+    suffix_map = {
+        "captioner": "caption",
+        "transcriber": "lyrics",
+        "whisper": "transcript"
+    }
+    suffix = suffix_map.get(model_type, "txt")
+    filename = f"{base}.{suffix}.txt"
+
     if output_dir:
         ensure_output_dir(output_dir)
         save_path = os.path.join(output_dir, filename)
@@ -302,6 +316,7 @@ def save_result(text, audio_path, output_dir, model_type):
         save_path = os.path.join(os.path.dirname(audio_path), filename)
     else:
         save_path = filename
+
     try:
         with open(save_path, 'w', encoding='utf-8') as f:
             f.write(text)
@@ -359,24 +374,30 @@ def separate_stems(audio_path, target_stem='vocals', use_gpu=False):
     with torch.no_grad():
         sources = apply_model(model, wav, shifts=5, split=True, overlap=0.25, progress=True)[0]
 
-    stems = model.sources  # ['drums', 'bass', 'other', 'vocals']
+    stems_list = model.sources  # ['drums', 'bass', 'other', 'vocals']
+    stems_dict = {}
+    for idx, stem_name in enumerate(stems_list):
+        stem_audio = sources[idx].cpu().numpy().squeeze()
+        if stem_audio.ndim > 1:
+            stem_audio = stem_audio.mean(axis=0)
+        stems_dict[stem_name] = stem_audio
 
+    # Извлекаем целевой стем
     if target_stem == 'instrumental':
-        vocal_idx = stems.index('vocals')
-        instrumental = torch.cat([sources[i] for i in range(len(stems)) if i != vocal_idx], dim=0).mean(dim=0, keepdim=True)
-        result_audio = instrumental.cpu().numpy().squeeze()
+        vocal_idx = stems_list.index('vocals')
+        instrumental = np.mean([sources[i].cpu().numpy().squeeze() for i in range(len(stems_list)) if i != vocal_idx], axis=0)
+        if instrumental.ndim > 1:
+            instrumental = instrumental.mean(axis=0)
+        result_audio = instrumental
     else:
-        stem_idx = stems.index(target_stem)
-        result_audio = sources[stem_idx].cpu().numpy().squeeze()
-        if result_audio.ndim > 1:
-            result_audio = result_audio.mean(axis=0)
+        result_audio = stems_dict[target_stem]
 
-    # Ресемплинг обратно до 16 кГц для моделей
+    # Ресемплинг результата до 16 кГц для моделей распознавания
     if sr != SAMPLE_RATE:
         print(f"🔁 Ресемплинг результата с {sr} Гц до {SAMPLE_RATE} Гц...")
         result_audio = librosa.resample(result_audio, orig_sr=sr, target_sr=SAMPLE_RATE)
 
-    return result_audio, SAMPLE_RATE
+    return result_audio, SAMPLE_RATE, stems_dict, sr
 
 # ----------------------------------------------------------------------
 # Функция разбиения аудио на сегменты
@@ -409,8 +430,6 @@ def transcribe_with_whisper_pipeline(audio_data, sr, language=None):
     }
     if language is not None and language != "auto":
         generate_kwargs["language"] = language
-    # Параметры no_speech_threshold, logprob_threshold и др. можно добавить,
-    # но они поддерживаются в пайплайне.
     result = whisper_pipeline(audio_data, generate_kwargs=generate_kwargs)
     return result["text"]
 
@@ -424,18 +443,13 @@ def transcribe_with_whisper_manual(audio_data, sr, language=None):
     if sr != 16000:
         audio_data = librosa.resample(audio_data, orig_sr=sr, target_sr=16000)
         sr = 16000
-    # Получаем входные данные от процессора
     inputs = whisper_processor(audio_data, sampling_rate=sr, return_tensors="pt")
-    # Переносим на устройство модели
     inputs = {k: v.to(whisper_model.device) for k, v in inputs.items()}
-    # Получаем forced_decoder_ids для указания языка и задачи
     forced_decoder_ids = whisper_processor.get_decoder_prompt_ids(language=language, task="transcribe")
     with torch.no_grad():
         predicted_ids = whisper_model.generate(
             **inputs,
             forced_decoder_ids=forced_decoder_ids,
-            # Остальные параметры (temperature, no_speech_threshold и т.д.) не поддерживаются напрямую в generate
-            # Для детерминированного вывода используем do_sample=False (по умолчанию)
         )
     transcription = whisper_processor.batch_decode(predicted_ids, skip_special_tokens=True)[0]
     return transcription
@@ -529,7 +543,7 @@ def process_single_file(audio_file, text_input, system_prompt, user_prompt,
                         max_sec, max_new_tokens, do_sample, temperature, repetition_penalty,
                         console_progress, noise_reduction, use_stem_separation, target_stem,
                         use_gpu_demucs, save_debug, recognition_model, use_segmentation,
-                        segment_duration, whisper_language):
+                        segment_duration, whisper_language, save_all_stems, output_dir):
     """
     Обрабатывает один аудиофайл:
     - Предобработка (стемы, шумоподавление, обрезка, нормализация)
@@ -538,23 +552,69 @@ def process_single_file(audio_file, text_input, system_prompt, user_prompt,
     global batch_stop_flag
 
     # Загружаем и предобрабатываем аудио (единая часть)
+    original_audio_path = audio_file if isinstance(audio_file, str) and os.path.exists(audio_file) else None
     if isinstance(audio_file, tuple) and len(audio_file) == 2:
         sr, arr = audio_file
         tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
         sf.write(tmp.name, arr, sr)
         audio_file = tmp.name
+        original_audio_path = None  # временный файл
 
     if not os.path.exists(audio_file):
         return "Ошибка: аудиофайл не найден."
 
+    stems_saved_msg = ""
     try:
         if use_stem_separation:
             print(f"🎤 Применяем разделение на стемы (target: {target_stem})...")
             try:
-                audio_data, sr = separate_stems(audio_file, target_stem, use_gpu=use_gpu_demucs)
+                audio_data, sr, stems_dict, stems_sr = separate_stems(
+                    audio_file, target_stem, use_gpu=use_gpu_demucs
+                )
+                # Если нужно сохранить все стемы
+                if save_all_stems:
+                    # Определяем базовую папку для сохранения
+                    if output_dir:
+                        base_dir = output_dir
+                    elif original_audio_path and not is_temp_path(original_audio_path):
+                        base_dir = os.path.dirname(original_audio_path)
+                    else:
+                        base_dir = tempfile.gettempdir()
+                        print("⚠️ Временный файл, стемы будут сохранены во временную папку.")
+
+                    # Создаём папку, если её нет
+                    try:
+                        os.makedirs(base_dir, exist_ok=True)
+                    except Exception as e:
+                        print(f"❌ Не удалось создать папку {base_dir}: {e}")
+                        stems_saved_msg = f"\n⚠️ Ошибка создания папки для стемов: {e}"
+                    else:
+                        # Очищаем имя файла от недопустимых символов
+                        base_name = os.path.splitext(os.path.basename(audio_file))[0]
+                        safe_base_name = re.sub(r'[<>:"/\\|?*]', '_', base_name)
+                        
+                        for stem_name, stem_audio in stems_dict.items():
+                            # Формируем имя файла: "basename.stem.wav"
+                            filename = f"{safe_base_name}.{stem_name}.wav"
+                            stem_path = os.path.join(base_dir, filename)
+                            
+                            # В Windows для длинных путей можно добавить префикс \\?\
+                            if os.name == 'nt' and len(stem_path) > 260:
+                                stem_path = '\\\\?\\' + os.path.abspath(stem_path)
+                            
+                            try:
+                                sf.write(stem_path, stem_audio, stems_sr)
+                                print(f"💾 Сохранён стем: {stem_path}")
+                            except Exception as e:
+                                print(f"❌ Ошибка сохранения стема {stem_name}: {e}")
+                                stems_saved_msg += f"\n⚠️ Ошибка сохранения {stem_name}: {e}"
+                        
+                        if not stems_saved_msg:
+                            print(f"✅ Стемы сохранены в {base_dir}")
             except Exception as e:
                 print(f"❌ Ошибка разделения: {e}. Использую оригинальное аудио.")
                 audio_data, sr = librosa.load(audio_file, sr=SAMPLE_RATE, mono=True)
+                stems_saved_msg = f"\n⚠️ Ошибка разделения на стемы: {e}"
         else:
             audio_data, sr = librosa.load(audio_file, sr=SAMPLE_RATE, mono=True)
 
@@ -577,8 +637,7 @@ def process_single_file(audio_file, text_input, system_prompt, user_prompt,
             print("    выполнена нормализация")
 
         if save_debug:
-            save_func = globals()['save_debug_audio']
-            save_func(audio_data, sr, prefix="processed_audio")
+            save_debug_audio(audio_data, sr, prefix="processed_audio")
 
     except Exception as e:
         return f"Ошибка загрузки аудио: {e}"
@@ -586,7 +645,6 @@ def process_single_file(audio_file, text_input, system_prompt, user_prompt,
     # Теперь выбор модели и режима
     if recognition_model == "Whisper Large v3":
         if use_segmentation:
-            # Ручная сегментация для Whisper
             segments = split_audio(audio_data, sr, segment_duration)
             print(f"Ручная сегментация: {len(segments)} сегментов")
             full_text = ""
@@ -597,15 +655,16 @@ def process_single_file(audio_file, text_input, system_prompt, user_prompt,
                 print(f"--- Сегмент {idx+1}/{len(segments)} ---")
                 seg_text = transcribe_with_whisper_manual(seg, sr, language=whisper_language if whisper_language != "auto" else None)
                 full_text += seg_text + " "
-            return full_text.strip()
+            return full_text.strip() + stems_saved_msg
         else:
-            # Последовательная обработка через pipeline
-            return transcribe_with_whisper_pipeline(audio_data, sr, language=whisper_language if whisper_language != "auto" else None)
+            result = transcribe_with_whisper_pipeline(audio_data, sr, language=whisper_language if whisper_language != "auto" else None)
+            return result + stems_saved_msg
     else:
-        # Qwen Omni (сегментация не реализована, но можно добавить позже)
-        return process_with_qwen(audio_data, sr, text_input, system_prompt, user_prompt,
-                                 max_new_tokens, do_sample, temperature, repetition_penalty,
-                                 console_progress)
+        # Qwen Omni (сегментация не реализована)
+        result = process_with_qwen(audio_data, sr, text_input, system_prompt, user_prompt,
+                                   max_new_tokens, do_sample, temperature, repetition_penalty,
+                                   console_progress)
+        return result + stems_saved_msg
 
 # ----------------------------------------------------------------------
 # Пакетная обработка (обёртка)
@@ -615,7 +674,7 @@ def batch_process(file_list, folder_path, text_input, system_prompt, user_prompt
                   repetition_penalty, auto_save, output_dir, console_progress,
                   noise_reduction, use_segmentation, segment_duration,
                   use_stem_separation, target_stem, use_gpu_demucs, save_debug,
-                  recognition_model, whisper_language, progress=gr.Progress()):
+                  recognition_model, whisper_language, save_all_stems, progress=gr.Progress()):
     global batch_stop_flag, current_model_type
 
     if recognition_model == "Qwen Omni" and current_model is None:
@@ -653,7 +712,7 @@ def batch_process(file_list, folder_path, text_input, system_prompt, user_prompt
                 max_audio_sec, max_new_tokens, do_sample, temperature, repetition_penalty,
                 console_progress, noise_reduction, use_stem_separation, target_stem,
                 use_gpu_demucs, save_debug, recognition_model, use_segmentation,
-                segment_duration, whisper_language
+                segment_duration, whisper_language, save_all_stems, output_dir
             )
         except Exception as e:
             response = f"⏹️ Ошибка при обработке (возможно, остановка): {e}"
@@ -712,8 +771,15 @@ def prepare_download(text, audio_path, output_dir, model_type):
         base = os.path.splitext(os.path.basename(audio_path))[0]
     else:
         base = "result"
-    suffix = "caption" if model_type == "captioner" else "transcript"
-    filename = f"{base}_{suffix}.txt"
+
+    suffix_map = {
+        "captioner": "caption",
+        "transcriber": "lyrics",
+        "whisper": "transcript"
+    }
+    suffix = suffix_map.get(model_type, "txt")
+    filename = f"{base}.{suffix}.txt"
+
     temp_dir = tempfile.gettempdir()
     temp_path = os.path.join(temp_dir, filename)
     try:
@@ -740,7 +806,7 @@ with gr.Blocks(title="🎵 ACE-step: Captioner & Transcriber") as demo:
 
     # Первая строка: выбор модели и специфичные для неё элементы
     with gr.Row():
-        recognition_model = gr.Radio(choices=["Qwen Omni", "Whisper Large"], value="Qwen Omni", label="Модель распознавания", scale=2)
+        recognition_model = gr.Radio(choices=["Qwen Omni", "Whisper Large v3"], value="Qwen Omni", label="Модель распознавания", scale=2)
 
         # Элементы для Whisper (изначально скрыты)
         with gr.Column(scale=3, visible=False) as whisper_col:
@@ -824,7 +890,6 @@ with gr.Blocks(title="🎵 ACE-step: Captioner & Transcriber") as demo:
         gr.Markdown("### Общие параметры")
         with gr.Row():
             auto_save = gr.Checkbox(value=False, label="Автоматически сохранять результаты")
-        with gr.Row():
             output_dir = gr.Textbox(label="Папка для сохранения (пусто = рядом с аудио)", placeholder="", scale=4)
             browse_output_btn = gr.Button("📂", scale=1, min_width=50, elem_classes="square-btn")
             browse_output_btn.click(
@@ -840,24 +905,28 @@ with gr.Blocks(title="🎵 ACE-step: Captioner & Transcriber") as demo:
             segment_duration = gr.Slider(10, 60, value=30, step=5, label="Длина фрагмента (сек)")
         with gr.Row():
             use_stem_separation = gr.Checkbox(value=False, label="🎤 Разделение на стемы (Demucs)")
+            save_all_stems = gr.Checkbox(value=False, label="💾 Сохранить все стемы", interactive=False)
             target_stem = gr.Dropdown(
                 choices=["vocals", "instrumental", "drums", "bass", "other"],
                 value="vocals",
                 label="Целевой стем",
                 interactive=False
             )
-        with gr.Row():
             use_gpu_demucs = gr.Checkbox(value=False, label="🚀 Использовать GPU для Demucs (если доступен)")
         with gr.Row():
             debug_audio_checkbox = gr.Checkbox(value=False, label="💾 Сохранять аудио перед моделью (debug)")
 
-        # Динамическое включение выпадающего списка стемов
-        def toggle_stem_dropdown(use_stem):
-            return gr.update(interactive=use_stem)
+        # Динамическое включение элементов Demucs
+        def toggle_stem_options(use_stem):
+            return (
+                gr.update(interactive=use_stem),  # target_stem
+                gr.update(interactive=use_stem)   # save_all_stems
+            )
+
         use_stem_separation.change(
-            fn=toggle_stem_dropdown,
+            fn=toggle_stem_options,
             inputs=use_stem_separation,
-            outputs=target_stem
+            outputs=[target_stem, save_all_stems]
         )
 
         # Добавляем динамическое скрытие блока Qwen при выборе Whisper
@@ -938,7 +1007,7 @@ with gr.Blocks(title="🎵 ACE-step: Captioner & Transcriber") as demo:
 
     load_whisper_btn.click(
         fn=load_whisper_and_update,
-        inputs=[whisper_version],  # добавлено
+        inputs=[whisper_version],
         outputs=[task_btn, status_text]
     )
 
@@ -965,7 +1034,8 @@ with gr.Blocks(title="🎵 ACE-step: Captioner & Transcriber") as demo:
     def run_task(mode, audio_file, text, file_list, folder, system, user,
                  max_sec, max_tokens, sample, temp, rep_penalty,
                  auto_save, out_dir, console_prog, noise_red, use_seg, seg_dur,
-                 use_stem, target_stem, use_gpu, save_debug, rec_model, whisper_lang):
+                 use_stem, target_stem, use_gpu, save_debug, rec_model, whisper_lang,
+                 save_all_stems):
         global batch_stop_flag
         batch_stop_flag = False
         print(">>> run_task: batch_stop_flag сброшен")
@@ -984,7 +1054,7 @@ with gr.Blocks(title="🎵 ACE-step: Captioner & Transcriber") as demo:
                     audio_file, text, system, user,
                     max_sec, max_tokens, sample, temp, rep_penalty,
                     console_prog, noise_red, use_stem, target_stem, use_gpu, save_debug,
-                    rec_model, use_seg, seg_dur, whisper_lang
+                    rec_model, use_seg, seg_dur, whisper_lang, save_all_stems, out_dir
                 )
                 if auto_save and not response.startswith("⚠") and not response.startswith("Ошибка") and not response.startswith("⏹️"):
                     model_type_for_save = current_model_type if rec_model == "Qwen Omni" else "whisper"
@@ -1000,7 +1070,7 @@ with gr.Blocks(title="🎵 ACE-step: Captioner & Transcriber") as demo:
                                      auto_save, out_dir, console_prog,
                                      noise_red, use_seg, seg_dur,
                                      use_stem, target_stem, use_gpu, save_debug,
-                                     rec_model, whisper_lang)
+                                     rec_model, whisper_lang, save_all_stems)
         except Exception as e:
             return f"❌ Непредвиденная ошибка: {e}"
 
@@ -1012,7 +1082,7 @@ with gr.Blocks(title="🎵 ACE-step: Captioner & Transcriber") as demo:
                 auto_save, output_dir, console_progress,
                 noise_reduction, use_segmentation, segment_duration,
                 use_stem_separation, target_stem, use_gpu_demucs, debug_audio_checkbox,
-                recognition_model, whisper_language],
+                recognition_model, whisper_language, save_all_stems],
         outputs=output
     )
 
@@ -1045,12 +1115,9 @@ with gr.Blocks(title="🎵 ACE-step: Captioner & Transcriber") as demo:
             None, None, None, None,
             gr.update(visible=False),
             False, False, 30,
-            False, "vocals",
-            False,
-            False,
-            False,
-            "auto",                     # whisper_language
-            "openai/whisper-large-v3"    # whisper_version
+            False, "vocals", False,  # use_stem_separation, target_stem, save_all_stems
+            False, False, False,  # use_gpu_demucs, debug_audio_checkbox, noise_reduction
+            "auto", "openai/whisper-large-v3"
         )
 
     clear_all_btn.click(
@@ -1061,8 +1128,8 @@ with gr.Blocks(title="🎵 ACE-step: Captioner & Transcriber") as demo:
                  audio_input, file_input, folder_input, output,
                  download_btn,
                  noise_reduction, use_segmentation, segment_duration,
-                 use_stem_separation, target_stem, use_gpu_demucs, debug_audio_checkbox,
-                 recognition_model, whisper_language, whisper_version]  # добавили whisper_version
+                 use_stem_separation, target_stem, save_all_stems,  # добавлен save_all_stems
+                 use_gpu_demucs, debug_audio_checkbox, recognition_model, whisper_language, whisper_version]
     )
 
     gr.Markdown("---\n*Диагностика в консоли.*")
