@@ -19,7 +19,7 @@ from transformers import (
     StoppingCriteriaList,
     WhisperProcessor,
     WhisperForConditionalGeneration,
-    pipeline
+    pipeline                      # for Whisper pipeline
 )
 from qwen_omni_utils import process_mm_info
 import tkinter as tk
@@ -52,7 +52,7 @@ current_model = None           # for Qwen
 current_processor = None       # for Qwen
 whisper_model = None           # for Whisper
 whisper_processor = None       # for Whisper
-whisper_pipeline = None        # Whisper pipeline
+whisper_pipeline = None        # pipeline for Whisper
 current_model_path = None
 current_model_type = None
 current_stop_event = None
@@ -131,7 +131,7 @@ def load_qwen_model(model_info, dtype_choice, quantization_choice, use_flash, di
         try:
             import bitsandbytes
         except ImportError:
-            return (gr.update(), "❌ bitsandbytes not installed, quantization unavailable", gr.update())
+            return (gr.update(), "❌ bitsandbytes is not installed, quantization unavailable", gr.update())
 
     dtype_map = {
         "float16": torch.float16,
@@ -142,7 +142,7 @@ def load_qwen_model(model_info, dtype_choice, quantization_choice, use_flash, di
     }
     torch_dtype = dtype_map.get(dtype_choice, torch.float16)
     if torch_dtype is None:
-        return (gr.update(), f"❌ Type {dtype_choice} not supported by this torch version", gr.update())
+        return (gr.update(), f"❌ Type {dtype_choice} is not supported by this torch version", gr.update())
 
     quantization_config = None
     if quantization_choice == "8-bit":
@@ -194,7 +194,7 @@ def load_qwen_model(model_info, dtype_choice, quantization_choice, use_flash, di
     current_model_type = model_type
 
     load_time = time.time() - start_load
-    print(f"Qwen loaded in {load_time:.2f} seconds")
+    print(f"Qwen loaded in {load_time:.2f} sec")
     print(f"Devices: {model.device}, dtype: {model.dtype}")
 
     if model_type == "captioner":
@@ -215,8 +215,10 @@ def load_qwen_model(model_info, dtype_choice, quantization_choice, use_flash, di
 # ----------------------------------------------------------------------
 def load_whisper_model(model_version="openai/whisper-large-v3"):
     global whisper_model, whisper_processor, whisper_pipeline
+    # If the same version is already loaded, do nothing
     if whisper_pipeline is not None and hasattr(whisper_model, "config") and whisper_model.config._name_or_path == model_version:
         return
+    # Unload the previous version if it was loaded
     unload_whisper_model()
     device = 0 if torch.cuda.is_available() else -1
     print(f"📥 Loading Whisper {model_version}...")
@@ -252,7 +254,7 @@ def unload_whisper_model():
         print("Whisper unloaded.")
 
 # ----------------------------------------------------------------------
-# Parse memory limits
+# Parsing memory limits
 # ----------------------------------------------------------------------
 def parse_memory_limits(limit_str):
     if not limit_str or limit_str.strip() == "":
@@ -278,11 +280,17 @@ def parse_memory_limits(limit_str):
     return max_memory, None
 
 # ----------------------------------------------------------------------
-# Helper functions for saving results
+# Helper functions for saving
 # ----------------------------------------------------------------------
 def ensure_output_dir(output_dir):
     if output_dir:
         Path(output_dir).mkdir(parents=True, exist_ok=True)
+
+def is_temp_path(path):
+    """Checks whether the file is located in a system temporary folder."""
+    temp_dirs = [tempfile.gettempdir(), '/tmp', '/var/tmp']
+    norm_path = os.path.normpath(path)
+    return any(norm_path.startswith(os.path.normpath(temp_dir)) for temp_dir in temp_dirs)
 
 def save_result(text, audio_path, output_dir, model_type):
     if not text or text.startswith("⚠") or text.startswith("Error") or text.startswith("⏹️"):
@@ -291,8 +299,16 @@ def save_result(text, audio_path, output_dir, model_type):
         base = os.path.splitext(os.path.basename(audio_path))[0]
     else:
         base = "result"
-    suffix = "caption" if model_type == "captioner" else "transcript"
-    filename = f"{base}_{suffix}.txt"
+
+    # Determine the suffix depending on the model type
+    suffix_map = {
+        "captioner": "caption",
+        "transcriber": "lyrics",
+        "whisper": "transcript"
+    }
+    suffix = suffix_map.get(model_type, "txt")
+    filename = f"{base}.{suffix}.txt"
+
     if output_dir:
         ensure_output_dir(output_dir)
         save_path = os.path.join(output_dir, filename)
@@ -300,6 +316,7 @@ def save_result(text, audio_path, output_dir, model_type):
         save_path = os.path.join(os.path.dirname(audio_path), filename)
     else:
         save_path = filename
+
     try:
         with open(save_path, 'w', encoding='utf-8') as f:
             f.write(text)
@@ -308,7 +325,7 @@ def save_result(text, audio_path, output_dir, model_type):
         return None, f"❌ Save error: {e}"
 
 def save_debug_audio(audio_data, sr, prefix="qwen_input"):
-    """Save audio to temporary folder for debugging."""
+    """Saves the audio to the temporary folder for debugging."""
     timestamp = int(time.time())
     filename = f"{prefix}_{timestamp}.wav"
     temp_dir = tempfile.gettempdir()
@@ -318,14 +335,14 @@ def save_debug_audio(audio_data, sr, prefix="qwen_input"):
     return path
 
 # ----------------------------------------------------------------------
-# Folder selection dialog
+# Folder selection via dialog
 # ----------------------------------------------------------------------
 def browse_folder(current_path=""):
     root = tk.Tk()
     root.withdraw()
     root.attributes('-topmost', True)
     initial_dir = current_path if current_path and os.path.exists(current_path) else "."
-    selected = filedialog.askdirectory(title="Select folder", initialdir=initial_dir)
+    selected = filedialog.askdirectory(title="Select a folder", initialdir=initial_dir)
     root.destroy()
     return selected if selected else current_path
 
@@ -357,24 +374,30 @@ def separate_stems(audio_path, target_stem='vocals', use_gpu=False):
     with torch.no_grad():
         sources = apply_model(model, wav, shifts=5, split=True, overlap=0.25, progress=True)[0]
 
-    stems = model.sources  # ['drums', 'bass', 'other', 'vocals']
+    stems_list = model.sources  # ['drums', 'bass', 'other', 'vocals']
+    stems_dict = {}
+    for idx, stem_name in enumerate(stems_list):
+        stem_audio = sources[idx].cpu().numpy().squeeze()
+        if stem_audio.ndim > 1:
+            stem_audio = stem_audio.mean(axis=0)
+        stems_dict[stem_name] = stem_audio
 
+    # Extract the target stem
     if target_stem == 'instrumental':
-        vocal_idx = stems.index('vocals')
-        instrumental = torch.cat([sources[i] for i in range(len(stems)) if i != vocal_idx], dim=0).mean(dim=0, keepdim=True)
-        result_audio = instrumental.cpu().numpy().squeeze()
+        vocal_idx = stems_list.index('vocals')
+        instrumental = np.mean([sources[i].cpu().numpy().squeeze() for i in range(len(stems_list)) if i != vocal_idx], axis=0)
+        if instrumental.ndim > 1:
+            instrumental = instrumental.mean(axis=0)
+        result_audio = instrumental
     else:
-        stem_idx = stems.index(target_stem)
-        result_audio = sources[stem_idx].cpu().numpy().squeeze()
-        if result_audio.ndim > 1:
-            result_audio = result_audio.mean(axis=0)
+        result_audio = stems_dict[target_stem]
 
-    # Resample back to 16 kHz for the models
+    # Resample the result to 16 kHz for recognition models
     if sr != SAMPLE_RATE:
         print(f"🔁 Resampling result from {sr} Hz to {SAMPLE_RATE} Hz...")
         result_audio = librosa.resample(result_audio, orig_sr=sr, target_sr=SAMPLE_RATE)
 
-    return result_audio, SAMPLE_RATE
+    return result_audio, SAMPLE_RATE, stems_dict, sr
 
 # ----------------------------------------------------------------------
 # Split audio into segments
@@ -392,7 +415,7 @@ def split_audio(audio_data, sr, segment_sec, overlap_sec=0):
     return segments
 
 # ----------------------------------------------------------------------
-# Whisper transcription (pipeline, sequential)
+# Recognition via Whisper (no segmentation, using the pipeline)
 # ----------------------------------------------------------------------
 def transcribe_with_whisper_pipeline(audio_data, sr, language=None):
     global whisper_pipeline
@@ -403,7 +426,7 @@ def transcribe_with_whisper_pipeline(audio_data, sr, language=None):
         sr = 16000
     generate_kwargs = {
         "task": "transcribe",
-        "temperature": 0.0,
+        "temperature": 0.0,  # deterministic output
     }
     if language is not None and language != "auto":
         generate_kwargs["language"] = language
@@ -411,7 +434,7 @@ def transcribe_with_whisper_pipeline(audio_data, sr, language=None):
     return result["text"]
 
 # ----------------------------------------------------------------------
-# Whisper transcription (manual segmentation)
+# Recognition via Whisper with manual segmentation (for comparison)
 # ----------------------------------------------------------------------
 def transcribe_with_whisper_manual(audio_data, sr, language=None):
     global whisper_model, whisper_processor
@@ -432,7 +455,7 @@ def transcribe_with_whisper_manual(audio_data, sr, language=None):
     return transcription
 
 # ----------------------------------------------------------------------
-# Qwen processing
+# Processing via Qwen (separate function)
 # ----------------------------------------------------------------------
 def process_with_qwen(audio_data, sr, text_input, system_prompt, user_prompt,
                       max_new_tokens, do_sample, temperature, repetition_penalty,
@@ -440,16 +463,20 @@ def process_with_qwen(audio_data, sr, text_input, system_prompt, user_prompt,
     global current_model, current_processor, current_model_type, current_stop_event
 
     if current_model is None:
-        return "⚠️ Load a Qwen model first."
+        return "⚠️ Please load the Qwen model first."
 
-    # Build conversation
+    # Build the conversation: base task prompt + extra text from the input field
+    combined_prompt = user_prompt or ""
+    if text_input:
+        combined_prompt = (combined_prompt + "\n" + text_input).strip()
+
     conversations = [
         {"role": "system", "content": [{"type": "text", "text": system_prompt}]}
     ]
-    user_content = [{"type": "audio", "audio": audio_data}, {"type": "text", "text": user_prompt}]
+    user_content = [{"type": "audio", "audio": audio_data}, {"type": "text", "text": combined_prompt}]
     conversations.append({"role": "user", "content": user_content})
 
-    # Tokenize
+    # Tokenization
     try:
         audios_list = [audio_data]
         inputs = current_processor.apply_chat_template(
@@ -463,7 +490,7 @@ def process_with_qwen(audio_data, sr, text_input, system_prompt, user_prompt,
             padding=True,
         ).to(current_model.device)
     except Exception as e:
-        return f"Tokenization error: {e}"
+        return f"Error during tokenization: {e}"
 
     for k, v in inputs.items():
         if isinstance(v, torch.Tensor) and torch.is_floating_point(v) and v.dtype != current_model.dtype:
@@ -492,11 +519,11 @@ def process_with_qwen(audio_data, sr, text_input, system_prompt, user_prompt,
         with torch.no_grad():
             output = current_model.generate(**inputs, **gen_kwargs)
     except Exception as e:
-        return f"Generation error: {e}"
+        return f"Error during generation: {e}"
     finally:
         current_stop_event = None
 
-    # Decode
+    # Decoding
     if isinstance(output, torch.Tensor):
         text_ids = output
     elif isinstance(output, tuple):
@@ -509,49 +536,95 @@ def process_with_qwen(audio_data, sr, text_input, system_prompt, user_prompt,
     response = current_processor.decode(response_ids, skip_special_tokens=True)
 
     if stop_event.is_set():
-        response = "⚠️ Generation interrupted by user (partial result).\n\n" + response
+        response = "⚠️ Generation interrupted by the user (partial result).\n\n" + response
 
     return response
 
 # ----------------------------------------------------------------------
-# Single file processing (unified preprocessing + model call)
+# Main processing function for a single file (model and mode selection)
 # ----------------------------------------------------------------------
 def process_single_file(audio_file, text_input, system_prompt, user_prompt,
                         max_sec, max_new_tokens, do_sample, temperature, repetition_penalty,
                         console_progress, noise_reduction, use_stem_separation, target_stem,
                         use_gpu_demucs, save_debug, recognition_model, use_segmentation,
-                        segment_duration, whisper_language):
+                        segment_duration, whisper_language, save_all_stems, output_dir):
     """
-    Process a single audio file:
-    - Preprocessing (stems, noise reduction, trim, normalization)
-    - Then pass to the appropriate model with segmentation handling
+    Processes a single audio file:
+    - Preprocessing (stems, noise reduction, trimming, normalization)
+    - Then passes it to the chosen model, taking segmentation into account
     """
     global batch_stop_flag
 
-    # Handle tuple input from Gradio
+    # Load and preprocess audio (common part)
+    original_audio_path = audio_file if isinstance(audio_file, str) and os.path.exists(audio_file) else None
     if isinstance(audio_file, tuple) and len(audio_file) == 2:
         sr, arr = audio_file
         tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
         sf.write(tmp.name, arr, sr)
         audio_file = tmp.name
+        original_audio_path = None  # temporary file
 
     if not os.path.exists(audio_file):
         return "Error: audio file not found."
 
+    stems_saved_msg = ""
     try:
         if use_stem_separation:
             print(f"🎤 Applying stem separation (target: {target_stem})...")
             try:
-                audio_data, sr = separate_stems(audio_file, target_stem, use_gpu=use_gpu_demucs)
+                audio_data, sr, stems_dict, stems_sr = separate_stems(
+                    audio_file, target_stem, use_gpu=use_gpu_demucs
+                )
+                # Save all stems if requested
+                if save_all_stems:
+                    # Determine the base folder for saving
+                    if output_dir:
+                        base_dir = output_dir
+                    elif original_audio_path and not is_temp_path(original_audio_path):
+                        base_dir = os.path.dirname(original_audio_path)
+                    else:
+                        base_dir = tempfile.gettempdir()
+                        print("⚠️ Temporary file, stems will be saved to the temporary folder.")
+
+                    # Create the folder if it doesn't exist
+                    try:
+                        os.makedirs(base_dir, exist_ok=True)
+                    except Exception as e:
+                        print(f"❌ Failed to create folder {base_dir}: {e}")
+                        stems_saved_msg = f"\n⚠️ Error creating folder for stems: {e}"
+                    else:
+                        # Sanitize the file name from invalid characters
+                        base_name = os.path.splitext(os.path.basename(audio_file))[0]
+                        safe_base_name = re.sub(r'[<>:"/\\|?*]', '_', base_name)
+                        
+                        for stem_name, stem_audio in stems_dict.items():
+                            # File name: "basename.stem.wav"
+                            filename = f"{safe_base_name}.{stem_name}.wav"
+                            stem_path = os.path.join(base_dir, filename)
+                            
+                            # On Windows, long paths can use the \\?\ prefix
+                            if os.name == 'nt' and len(stem_path) > 260:
+                                stem_path = '\\\\?\\' + os.path.abspath(stem_path)
+                            
+                            try:
+                                sf.write(stem_path, stem_audio, stems_sr)
+                                print(f"💾 Stem saved: {stem_path}")
+                            except Exception as e:
+                                print(f"❌ Error saving stem {stem_name}: {e}")
+                                stems_saved_msg += f"\n⚠️ Error saving {stem_name}: {e}"
+                        
+                        if not stems_saved_msg:
+                            print(f"✅ Stems saved to {base_dir}")
             except Exception as e:
-                print(f"❌ Separation error: {e}. Using original audio.")
+                print(f"❌ Separation error: {e}. Using the original audio.")
                 audio_data, sr = librosa.load(audio_file, sr=SAMPLE_RATE, mono=True)
+                stems_saved_msg = f"\n⚠️ Stem separation error: {e}"
         else:
             audio_data, sr = librosa.load(audio_file, sr=SAMPLE_RATE, mono=True)
 
-        print(f"    Sample rate: {sr} Hz, shape: {audio_data.shape}")
+        print(f"    sample rate: {sr} Hz, shape: {audio_data.shape}")
         dur = len(audio_data) / sr
-        print(f"    Duration: {dur:.2f} s")
+        print(f"    duration: {dur:.2f} sec")
 
         if noise_reduction:
             print("    Applying noise reduction...")
@@ -561,23 +634,21 @@ def process_single_file(audio_file, text_input, system_prompt, user_prompt,
             max_samp = int(max_sec * sr)
             if len(audio_data) > max_samp:
                 audio_data = audio_data[:max_samp]
-                print(f"    Trimmed to {max_sec} s")
+                print(f"    trimmed to {max_sec} sec")
 
         if np.max(np.abs(audio_data)) > 1.0:
             audio_data = audio_data / np.max(np.abs(audio_data))
-            print("    Normalized")
+            print("    normalization applied")
 
         if save_debug:
-            save_func = globals()['save_debug_audio']
-            save_func(audio_data, sr, prefix="processed_audio")
+            save_debug_audio(audio_data, sr, prefix="processed_audio")
 
     except Exception as e:
-        return f"Audio loading error: {e}"
+        return f"Error loading audio: {e}"
 
-    # Model selection
+    # Now the model and mode selection
     if recognition_model == "Whisper Large v3":
         if use_segmentation:
-            # Manual segmentation for Whisper
             segments = split_audio(audio_data, sr, segment_duration)
             print(f"Manual segmentation: {len(segments)} segments")
             full_text = ""
@@ -588,31 +659,32 @@ def process_single_file(audio_file, text_input, system_prompt, user_prompt,
                 print(f"--- Segment {idx+1}/{len(segments)} ---")
                 seg_text = transcribe_with_whisper_manual(seg, sr, language=whisper_language if whisper_language != "auto" else None)
                 full_text += seg_text + " "
-            return full_text.strip()
+            return full_text.strip() + stems_saved_msg
         else:
-            # Sequential processing via pipeline
-            return transcribe_with_whisper_pipeline(audio_data, sr, language=whisper_language if whisper_language != "auto" else None)
+            result = transcribe_with_whisper_pipeline(audio_data, sr, language=whisper_language if whisper_language != "auto" else None)
+            return result + stems_saved_msg
     else:
-        # Qwen Omni
-        return process_with_qwen(audio_data, sr, text_input, system_prompt, user_prompt,
-                                 max_new_tokens, do_sample, temperature, repetition_penalty,
-                                 console_progress)
+        # Qwen Omni (segmentation not implemented)
+        result = process_with_qwen(audio_data, sr, text_input, system_prompt, user_prompt,
+                                   max_new_tokens, do_sample, temperature, repetition_penalty,
+                                   console_progress)
+        return result + stems_saved_msg
 
 # ----------------------------------------------------------------------
-# Batch processing (multiple files or folder)
+# Batch processing (wrapper)
 # ----------------------------------------------------------------------
 def batch_process(file_list, folder_path, text_input, system_prompt, user_prompt,
                   max_audio_sec, max_new_tokens, do_sample, temperature,
                   repetition_penalty, auto_save, output_dir, console_progress,
                   noise_reduction, use_segmentation, segment_duration,
                   use_stem_separation, target_stem, use_gpu_demucs, save_debug,
-                  recognition_model, whisper_language, progress=gr.Progress()):
+                  recognition_model, whisper_language, save_all_stems, progress=gr.Progress()):
     global batch_stop_flag, current_model_type
 
     if recognition_model == "Qwen Omni" and current_model is None:
-        return "⚠️ Load a Qwen model first."
+        return "⚠️ Please load the Qwen model first."
     if recognition_model == "Whisper Large v3":
-        load_whisper_model()
+        load_whisper_model()  # will load if not loaded yet
 
     audio_files = []
     if file_list:
@@ -632,8 +704,8 @@ def batch_process(file_list, folder_path, text_input, system_prompt, user_prompt
     total = len(audio_files)
     for i, audio_path in enumerate(audio_files):
         if batch_stop_flag:
-            print("Batch processing interrupted by user.")
-            results.append("⏹️ Batch processing interrupted by user.")
+            print("Batch processing stopped by the user.")
+            results.append("⏹️ Batch processing interrupted by the user.")
             break
 
         progress(i/total, desc=f"Processing {os.path.basename(audio_path)}")
@@ -644,14 +716,14 @@ def batch_process(file_list, folder_path, text_input, system_prompt, user_prompt
                 max_audio_sec, max_new_tokens, do_sample, temperature, repetition_penalty,
                 console_progress, noise_reduction, use_stem_separation, target_stem,
                 use_gpu_demucs, save_debug, recognition_model, use_segmentation,
-                segment_duration, whisper_language
+                segment_duration, whisper_language, save_all_stems, output_dir
             )
         except Exception as e:
-            response = f"⏹️ Processing error (possibly interrupted): {e}"
+            response = f"⏹️ Processing error (possibly stopped): {e}"
 
         if batch_stop_flag:
-            print("Batch processing interrupted by user after current file.")
-            results.append("⏹️ Batch processing interrupted by user after current file.")
+            print("Batch processing stopped by the user after the file.")
+            results.append("⏹️ Batch processing interrupted by the user after the current file.")
             break
 
         if auto_save and not response.startswith("⚠") and not response.startswith("Error") and not response.startswith("⏹️"):
@@ -690,7 +762,7 @@ def stop_generation():
     batch_stop_flag = True
     if current_stop_event is not None:
         current_stop_event.set()
-        return "⏹️ Stop signal sent (generation will stop at next step)"
+        return "⏹️ Stop signal sent (generation will finish at the next step)"
     return "⏹️ No active generation, but batch processing will be stopped"
 
 # ----------------------------------------------------------------------
@@ -703,8 +775,15 @@ def prepare_download(text, audio_path, output_dir, model_type):
         base = os.path.splitext(os.path.basename(audio_path))[0]
     else:
         base = "result"
-    suffix = "caption" if model_type == "captioner" else "transcript"
-    filename = f"{base}_{suffix}.txt"
+
+    suffix_map = {
+        "captioner": "caption",
+        "transcriber": "lyrics",
+        "whisper": "transcript"
+    }
+    suffix = suffix_map.get(model_type, "txt")
+    filename = f"{base}.{suffix}.txt"
+
     temp_dir = tempfile.gettempdir()
     temp_path = os.path.join(temp_dir, filename)
     try:
@@ -720,38 +799,39 @@ def prepare_download(text, audio_path, output_dir, model_type):
 initial_models = get_models(False)
 model_choices = [(m["name"], m) for m in initial_models]
 
-# Whisper languages
+# Whisper language list
 whisper_languages = ["auto", "ru", "en", "de", "fr", "es", "it", "pt", "pl", "uk", "zh", "ja", "ko"]
 # Available Whisper versions
 whisper_versions = ["openai/whisper-large-v3", "openai/whisper-large-v2"]
 
 with gr.Blocks(title="🎵 ACE-step: Captioner & Transcriber") as demo:
     gr.Markdown("# 🎵 ACE-step: Captioner & Transcriber")
-    gr.Markdown("Select a model, adjust settings, and upload audio.")
+    gr.Markdown("Choose a model, configure the settings, load audio.")
 
+    # First row: model choice and its specific elements
     with gr.Row():
-        recognition_model = gr.Radio(choices=["Qwen Omni", "Whisper Large"], value="Qwen Omni", label="Recognition Model", scale=2)
+        recognition_model = gr.Radio(choices=["Qwen Omni", "Whisper Large v3"], value="Qwen Omni", label="Recognition model", scale=2)
 
-        # Whisper elements (initially hidden)
+        # Elements for Whisper (initially hidden)
         with gr.Column(scale=3, visible=False) as whisper_col:
             whisper_version = gr.Dropdown(choices=whisper_versions, value="openai/whisper-large-v3", label="Whisper version")
             whisper_language = gr.Dropdown(choices=whisper_languages, value="auto", label="Language (Whisper)")
 
-        # Qwen elements (initially visible)
+        # Elements for Qwen (initially visible)
         with gr.Column(scale=3, visible=True) as qwen_col:
-            model_dropdown = gr.Dropdown(choices=model_choices, label="Qwen Model")
-            advanced_search = gr.Checkbox(label="🔍 Advanced Search", value=False)
+            model_dropdown = gr.Dropdown(choices=model_choices, label="Qwen model")
+            advanced_search = gr.Checkbox(label="🔍 Advanced search", value=False)
 
-        # Load buttons
+        # Load buttons (always visible, but active depending on the selection)
         load_qwen_btn = gr.Button("📥 Load Qwen", variant="primary", scale=1, visible=True)
         unload_qwen_btn = gr.Button("⏹️ Unload Qwen", variant="secondary", scale=1, visible=True)
         load_whisper_btn = gr.Button("📥 Load Whisper", variant="primary", scale=1, visible=False)
         unload_whisper_btn = gr.Button("⏹️ Unload Whisper", variant="secondary", scale=1, visible=False)
 
-    # Toggle UI based on selected model
+    # Function toggling block visibility depending on the selected model
     def toggle_ui(choice):
         show_qwen = choice == "Qwen Omni"
-        show_whisper = choice == "Whisper Large"
+        show_whisper = choice == "Whisper Large v3"
         return (
             gr.update(visible=show_whisper),        # whisper_col
             gr.update(visible=show_qwen),            # qwen_col
@@ -780,9 +860,9 @@ with gr.Blocks(title="🎵 ACE-step: Captioner & Transcriber") as demo:
     status_text = gr.Textbox(label="Status", value="Model not loaded", interactive=False)
 
     with gr.Accordion("⚙️ Settings", open=False):
-        # Qwen-specific settings (hidden when Whisper is selected)
+        # Group for Qwen (hidden when Whisper is selected)
         with gr.Column(visible=True) as qwen_settings:
-            gr.Markdown("### Qwen Parameters")
+            gr.Markdown("### Qwen parameters")
             with gr.Row():
                 dtype_choice = gr.Dropdown(choices=["float16", "bfloat16", "float32", "float8_e4m3fn", "float8_e5m2"],
                                            value="bfloat16", label="Precision")
@@ -793,10 +873,10 @@ with gr.Blocks(title="🎵 ACE-step: Captioner & Transcriber") as demo:
             with gr.Row():
                 device_map_strategy = gr.Dropdown(choices=["auto", "sequential", "balanced", "balanced_low_0", "custom"],
                                                  value="auto", label="device_map")
-                custom_limits = gr.Textbox(label="Custom limits", placeholder="20GB,20GB,15GB")
+                custom_limits = gr.Textbox(label="Limits for custom", placeholder="20GB,20GB,15GB")
                 offload_folder = gr.Textbox(label="Offload folder (CPU)", placeholder="e.g. ./offload")
             with gr.Row():
-                max_audio_sec = gr.Slider(0, 600, value=0, step=10, label="Max audio duration (s) (0 = no trim)")
+                max_audio_sec = gr.Slider(0, 600, value=0, step=10, label="Max audio duration (sec) (0 = no trimming)")
                 max_new_tokens = gr.Slider(128, 4096, 2048, step=64, label="Max new tokens")
             with gr.Row():
                 do_sample = gr.Checkbox(value=False, label="do_sample")
@@ -807,15 +887,14 @@ with gr.Blocks(title="🎵 ACE-step: Captioner & Transcriber") as demo:
                 system_prompt_input = gr.Textbox(label="System prompt", value=DEFAULT_SYSTEM_PROMPT, lines=3, scale=4)
                 reset_system_btn = gr.Button("↺", scale=1, min_width=50, elem_classes="square-btn")
             with gr.Row():
-                user_prompt_input = gr.Textbox(label="Task prompt", value="", lines=2, scale=4)
+                user_prompt_input = gr.Textbox(label="Base task prompt", value="", lines=2, scale=4)
                 reset_user_btn = gr.Button("↺", scale=1, min_width=50, elem_classes="square-btn")
 
         # Common settings (always visible)
-        gr.Markdown("### Common Settings")
+        gr.Markdown("### Common parameters")
         with gr.Row():
-            auto_save = gr.Checkbox(value=False, label="Auto-save results")
-        with gr.Row():
-            output_dir = gr.Textbox(label="Output folder (empty = same as audio)", placeholder="", scale=4)
+            auto_save = gr.Checkbox(value=False, label="Automatically save results")
+            output_dir = gr.Textbox(label="Save folder (empty = next to the audio)", placeholder="", scale=4)
             browse_output_btn = gr.Button("📂", scale=1, min_width=50, elem_classes="square-btn")
             browse_output_btn.click(
                 fn=browse_folder,
@@ -827,30 +906,34 @@ with gr.Blocks(title="🎵 ACE-step: Captioner & Transcriber") as demo:
             noise_reduction = gr.Checkbox(value=False, label="Noise reduction (noisereduce)")
         with gr.Row():
             use_segmentation = gr.Checkbox(value=False, label="Segmented processing (split into chunks)")
-            segment_duration = gr.Slider(10, 60, value=30, step=5, label="Chunk length (s)")
+            segment_duration = gr.Slider(10, 60, value=30, step=5, label="Segment length (sec)")
         with gr.Row():
             use_stem_separation = gr.Checkbox(value=False, label="🎤 Stem separation (Demucs)")
+            save_all_stems = gr.Checkbox(value=False, label="💾 Save all stems", interactive=False)
             target_stem = gr.Dropdown(
                 choices=["vocals", "instrumental", "drums", "bass", "other"],
                 value="vocals",
                 label="Target stem",
                 interactive=False
             )
-        with gr.Row():
             use_gpu_demucs = gr.Checkbox(value=False, label="🚀 Use GPU for Demucs (if available)")
         with gr.Row():
-            debug_audio_checkbox = gr.Checkbox(value=False, label="💾 Save audio before model (debug)")
+            debug_audio_checkbox = gr.Checkbox(value=False, label="💾 Save audio before the model (debug)")
 
-        # Toggle stem dropdown
-        def toggle_stem_dropdown(use_stem):
-            return gr.update(interactive=use_stem)
+        # Dynamically enabling Demucs elements
+        def toggle_stem_options(use_stem):
+            return (
+                gr.update(interactive=use_stem),  # target_stem
+                gr.update(interactive=use_stem)   # save_all_stems
+            )
+
         use_stem_separation.change(
-            fn=toggle_stem_dropdown,
+            fn=toggle_stem_options,
             inputs=use_stem_separation,
-            outputs=target_stem
+            outputs=[target_stem, save_all_stems]
         )
 
-        # Hide Qwen settings when Whisper is selected
+        # Adding dynamic hiding of the Qwen block when Whisper is selected
         def toggle_qwen_settings(choice):
             return gr.update(visible=(choice == "Qwen Omni"))
         recognition_model.change(
@@ -859,18 +942,18 @@ with gr.Blocks(title="🎵 ACE-step: Captioner & Transcriber") as demo:
             outputs=qwen_settings
         )
 
-    # Input mode switch
-    gr.Markdown("### Input Mode")
+    # Input mode switcher
+    gr.Markdown("### Input mode")
     with gr.Row():
         input_mode = gr.Radio(choices=["Single file", "Multiple files", "Folder"], value="Single file", label="")
     with gr.Column(visible=True) as single_col:
         audio_input = gr.Audio(type="filepath", label="Audio file")
-        text_input = gr.Textbox(label="Additional text", placeholder="e.g., focus on vocals", lines=2)
+        text_input = gr.Textbox(label="Extra text", placeholder="e.g. focus on vocals", lines=2)
     with gr.Column(visible=False) as multi_col:
         file_input = gr.Files(label="Select audio files", file_types=[".wav", ".mp3", ".flac", ".m4a", ".ogg"])
     with gr.Column(visible=False) as folder_col:
         with gr.Row():
-            folder_input = gr.Textbox(label="Path to audio folder", placeholder="C:/music/ or select via button", scale=4)
+            folder_input = gr.Textbox(label="Path to the folder with audio", placeholder="C:/music/ or select via the button", scale=4)
             browse_folder_btn = gr.Button("📂", scale=1, min_width=50, elem_classes="square-btn")
         browse_folder_btn.click(
             fn=browse_folder,
@@ -896,9 +979,9 @@ with gr.Blocks(title="🎵 ACE-step: Captioner & Transcriber") as demo:
     with gr.Row():
         save_btn = gr.Button("💾 Prepare for download", variant="secondary")
         download_btn = gr.DownloadButton("💾 Download result", visible=False, variant="primary")
-        clear_all_btn = gr.Button("🗑️ Clear all inputs", size="lg")
+        clear_all_btn = gr.Button("🗑️ Clear input fields", size="lg")
 
-    # Qwen load
+    # Qwen load logic
     def load_qwen_and_update(model_info, dtype, quant, flash, talker, device_map, limits, offload):
         return load_qwen_model(model_info, dtype, quant, flash, talker, device_map, limits, offload)
 
@@ -924,7 +1007,7 @@ with gr.Blocks(title="🎵 ACE-step: Captioner & Transcriber") as demo:
         if whisper_pipeline is not None:
             return gr.update(value="🎤 Run Whisper", variant="primary", interactive=True), "✅ Whisper loaded"
         else:
-            return gr.update(value="⬇️ Load error", variant="secondary", interactive=False), "❌ Failed to load Whisper"
+            return gr.update(value="⬇️ Load failed", variant="secondary", interactive=False), "❌ Failed to load Whisper"
 
     load_whisper_btn.click(
         fn=load_whisper_and_update,
@@ -951,30 +1034,31 @@ with gr.Blocks(title="🎵 ACE-step: Captioner & Transcriber") as demo:
         outputs=status_text
     )
 
-    # Main processing function
+    # Main processing function (triggered from task_btn)
     def run_task(mode, audio_file, text, file_list, folder, system, user,
                  max_sec, max_tokens, sample, temp, rep_penalty,
                  auto_save, out_dir, console_prog, noise_red, use_seg, seg_dur,
-                 use_stem, target_stem, use_gpu, save_debug, rec_model, whisper_lang):
+                 use_stem, target_stem, use_gpu, save_debug, rec_model, whisper_lang,
+                 save_all_stems):
         global batch_stop_flag
         batch_stop_flag = False
         print(">>> run_task: batch_stop_flag reset")
 
-        # Model load check
+        # Check model loading
         if rec_model == "Qwen Omni" and current_model is None:
-            return "⚠️ Load a Qwen model first."
+            return "⚠️ Please load the Qwen model first."
         if rec_model == "Whisper Large v3" and whisper_pipeline is None:
-            return "⚠️ Load a Whisper model first."
+            return "⚠️ Please load the Whisper model first."
 
         try:
             if mode == "Single file":
                 if not audio_file:
-                    return "⚠️ Select an audio file."
+                    return "⚠️ Please select an audio file."
                 response = process_single_file(
                     audio_file, text, system, user,
                     max_sec, max_tokens, sample, temp, rep_penalty,
                     console_prog, noise_red, use_stem, target_stem, use_gpu, save_debug,
-                    rec_model, use_seg, seg_dur, whisper_lang
+                    rec_model, use_seg, seg_dur, whisper_lang, save_all_stems, out_dir
                 )
                 if auto_save and not response.startswith("⚠") and not response.startswith("Error") and not response.startswith("⏹️"):
                     model_type_for_save = current_model_type if rec_model == "Qwen Omni" else "whisper"
@@ -990,7 +1074,7 @@ with gr.Blocks(title="🎵 ACE-step: Captioner & Transcriber") as demo:
                                      auto_save, out_dir, console_prog,
                                      noise_red, use_seg, seg_dur,
                                      use_stem, target_stem, use_gpu, save_debug,
-                                     rec_model, whisper_lang)
+                                     rec_model, whisper_lang, save_all_stems)
         except Exception as e:
             return f"❌ Unexpected error: {e}"
 
@@ -1002,7 +1086,7 @@ with gr.Blocks(title="🎵 ACE-step: Captioner & Transcriber") as demo:
                 auto_save, output_dir, console_progress,
                 noise_reduction, use_segmentation, segment_duration,
                 use_stem_separation, target_stem, use_gpu_demucs, debug_audio_checkbox,
-                recognition_model, whisper_language],
+                recognition_model, whisper_language, save_all_stems],
         outputs=output
     )
 
@@ -1012,7 +1096,6 @@ with gr.Blocks(title="🎵 ACE-step: Captioner & Transcriber") as demo:
         outputs=status_text
     )
 
-    # Manual download
     def handle_save(current_out, audio_path, out_dir, rec_model):
         if rec_model == "Qwen Omni" and current_model_type is None:
             return gr.update(), "Load a model first"
@@ -1029,7 +1112,6 @@ with gr.Blocks(title="🎵 ACE-step: Captioner & Transcriber") as demo:
         outputs=[download_btn, status_text]
     )
 
-    # Clear all inputs
     def clear_all():
         return (
             None, "", DEFAULT_SYSTEM_PROMPT, reset_user_prompt(),
@@ -1037,12 +1119,9 @@ with gr.Blocks(title="🎵 ACE-step: Captioner & Transcriber") as demo:
             None, None, None, None,
             gr.update(visible=False),
             False, False, 30,
-            False, "vocals",
-            False,
-            False,
-            False,
-            "auto",
-            "openai/whisper-large-v3"
+            False, "vocals", False,  # use_stem_separation, target_stem, save_all_stems
+            False, False, "Qwen Omni",  # use_gpu_demucs, debug_audio_checkbox, recognition_model
+            "auto", "openai/whisper-large-v3"
         )
 
     clear_all_btn.click(
@@ -1053,11 +1132,11 @@ with gr.Blocks(title="🎵 ACE-step: Captioner & Transcriber") as demo:
                  audio_input, file_input, folder_input, output,
                  download_btn,
                  noise_reduction, use_segmentation, segment_duration,
-                 use_stem_separation, target_stem, use_gpu_demucs, debug_audio_checkbox,
-                 recognition_model, whisper_language, whisper_version]
+                 use_stem_separation, target_stem, save_all_stems,  # save_all_stems added
+                 use_gpu_demucs, debug_audio_checkbox, recognition_model, whisper_language, whisper_version]
     )
 
-    gr.Markdown("---\n*Console diagnostics.*")
+    gr.Markdown("---\n*Diagnostics in the console.*")
 
 if __name__ == "__main__":
     demo.launch(inbrowser=True, css="""
