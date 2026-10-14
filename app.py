@@ -465,11 +465,15 @@ def process_with_qwen(audio_data, sr, text_input, system_prompt, user_prompt,
     if current_model is None:
         return "⚠️ Сначала загрузите модель Qwen."
 
-    # Формируем conversation
+    # Формируем conversation: базовый промпт задачи + доп. текст из поля ввода
+    combined_prompt = user_prompt or ""
+    if text_input:
+        combined_prompt = (combined_prompt + "\n" + text_input).strip()
+
     conversations = [
         {"role": "system", "content": [{"type": "text", "text": system_prompt}]}
     ]
-    user_content = [{"type": "audio", "audio": audio_data}, {"type": "text", "text": user_prompt}]
+    user_content = [{"type": "audio", "audio": audio_data}, {"type": "text", "text": combined_prompt}]
     conversations.append({"role": "user", "content": user_content})
 
     # Токенизация
@@ -1116,7 +1120,7 @@ with gr.Blocks(title="🎵 ACE-step: Captioner & Transcriber") as demo:
             gr.update(visible=False),
             False, False, 30,
             False, "vocals", False,  # use_stem_separation, target_stem, save_all_stems
-            False, False, False,  # use_gpu_demucs, debug_audio_checkbox, noise_reduction
+            False, False, "Qwen Omni",  # use_gpu_demucs, debug_audio_checkbox, recognition_model
             "auto", "openai/whisper-large-v3"
         )
 
